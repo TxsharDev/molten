@@ -365,7 +365,7 @@ class CodeGenerator:
             name = op.op_type.name.lower()
             if name not in parts:
                 parts.append(name)
-        return "zk_fused_" + "_".join(parts[:4])
+        return "molten_fused_" + "_".join(parts[:4])
 
 
 def compile_graph(graph: DataflowGraph,

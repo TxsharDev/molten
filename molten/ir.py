@@ -145,8 +145,7 @@ class DataflowGraph:
         return out_id
 
     def add_constant(self, name: str, value: float) -> int:
-        return self.add_op(OpType.CONSTANT, name=name,
-                           attrs={"value": value})
+        return self.add_op(OpType.CONSTANT, name=name, value=value)
 
     # --- Convenience builders ---
 
@@ -163,7 +162,9 @@ class DataflowGraph:
         return self.add_op(OpType.MATMUL, [a, b], name)
 
     def softmax(self, x: int, dim: int = -1, name: str = "") -> int:
-        return self.add_op(OpType.SOFTMAX, [x], name, reduction_dim=dim)
+        op_id = self.add_op(OpType.SOFTMAX, [x], name)
+        self.ops[op_id].reduction_dim = dim
+        return op_id
 
     def rms_norm(self, x: int, weight: int, name: str = "") -> int:
         """RMSNorm: x / rms(x) * weight"""

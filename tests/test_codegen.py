@@ -17,7 +17,7 @@ class TestCodeGenerator:
 
         kernels = compile_graph(g)
         assert len(kernels) >= 1
-        assert "zk_fused" in kernels[0].name
+        assert "molten_fused" in kernels[0].name
         assert "__global__" in kernels[0].source
         assert "fmaxf" in kernels[0].source  # RELU
 
