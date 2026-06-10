@@ -134,26 +134,31 @@ class CodeGenerator:
         for i in range(num_inputs):
             lines.append(f"    float v{i} = in{i}[idx];")
 
-        # Fused computation
+        # Fused computation — track op_id -> variable name mapping
         result_var = f"v0"
         temp_counter = num_inputs
+        op_id_to_var: dict[int, str] = {}
+        for i, inp_id in enumerate(input_list):
+            op_id_to_var[inp_id] = f"v{i}"
+
         for op in ops:
             template = _ELEMENTWISE_TEMPLATES.get(op.op_type)
             if template is None:
                 continue
 
             if len(op.inputs) == 2:
-                a_var = self._resolve_var(op.inputs[0], input_list, graph)
-                b_var = self._resolve_var(op.inputs[1], input_list, graph)
+                a_var = op_id_to_var.get(op.inputs[0], f"v0")
+                b_var = op_id_to_var.get(op.inputs[1], f"v0")
                 expr = template.format(a=a_var, b=b_var)
             elif len(op.inputs) == 1:
-                a_var = self._resolve_var(op.inputs[0], input_list, graph)
+                a_var = op_id_to_var.get(op.inputs[0], f"v0")
                 expr = template.format(a=a_var)
             else:
                 continue
 
             result_var = f"t{temp_counter}"
             temp_counter += 1
+            op_id_to_var[op.id] = result_var
             lines.append(f"    float {result_var} = {expr};")
 
         lines.append(f"    out[idx] = {result_var};")
