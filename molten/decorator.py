@@ -49,11 +49,9 @@ class CompiledFunction:
         if not self._compiled:
             self._compile_from_args(args, kwargs)
 
-        if self.config.fallback_to_torch or not self._compiled:
-            # Currently always use PyTorch for execution
-            # CUDA kernel dispatch will be added when nvcc integration is ready
-            return self.fn(*args, **kwargs)
-
+        # v0.1: @zero traces and generates .cu files but executes via PyTorch.
+        # The generated kernels can be compiled and benchmarked separately
+        # via MoltenRuntime. Direct dispatch from @zero is planned for v0.2.
         return self.fn(*args, **kwargs)
 
     def _compile_from_args(self, args, kwargs):

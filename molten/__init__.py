@@ -1,16 +1,18 @@
 """
 Molten: Fused GPU Kernel Generation from Mathematical Specifications
 
-Write math. Get fused CUDA kernels. No tile loops, no schedules,
-no launch configs. The compiler handles everything.
+Build a DataflowGraph, compile to fused CUDA kernels.
 
-    @zero
-    def rmsnorm_rope_attn(x, w, freqs, k, v):
-        x = x / rms(x) * w
-        x = rotate(x, freqs)
-        return softmax(x @ k.T / sqrt(d)) @ v
+    from molten import ZeroCompiler
+    from molten.ir import DataflowGraph, TensorShape
 
-    # Emits a single fused CUDA kernel
+    g = DataflowGraph("fused_rmsnorm")
+    x = g.add_input("x", TensorShape([2048, 5120]))
+    w = g.add_input("w", TensorShape([5120]))
+    out = g.rms_norm(x, w, "norm")
+    g.add_output(out)
+
+    kernels = ZeroCompiler().compile(g)  # -> fused .cu files
 """
 
 __version__ = "0.1.0"

@@ -22,20 +22,27 @@ Every new model architecture needs custom CUDA. RMSNorm, RoPE, GQA, MoE routing 
 Write math. Get fused CUDA.
 
 ```python
-from molten import zero
+from molten import ZeroCompiler
+from molten.ir import DataflowGraph, TensorShape
 
-@zero
-def rmsnorm_rope_attn(x, w, freqs, k, v):
-    x = x / rms(x) * w           # RMSNorm
-    x = rotate(x, freqs)          # RoPE
-    return softmax(x @ k.T) @ v   # Attention
+# Build the graph: RMSNorm = rms_reduce + divide + scale
+g = DataflowGraph("fused_rmsnorm")
+x = g.add_input("x", TensorShape([2048, 5120]))
+w = g.add_input("w", TensorShape([5120]))
+out = g.rms_norm(x, w, "norm")
+g.add_output(out)
+
+# Compile: 3 ops fused into 1 CUDA kernel
+compiler = ZeroCompiler()
+kernels = compiler.compile(g)
+compiler.save(kernels, "output/")
 ```
 
 Molten:
-1. Traces into a dataflow graph
+1. Builds a dataflow graph from operation definitions
 2. Discovers fusion opportunities across arbitrary boundaries
-3. Generates CUDA with correct tiling, shared memory, vectorized access
-4. Outputs `.cu` files
+3. Generates CUDA with tiling, shared memory, vectorized access
+4. JIT compiles and caches via `torch.utils.cpp_extension`
 
 ```
 Python function
@@ -58,15 +65,27 @@ pip install -e ".[dev]"
 ## Quick Start
 
 ```python
-from molten import zero
+from molten import ZeroCompiler
+from molten.ir import DataflowGraph, OpType, TensorShape
 
-@zero
-def fused_gelu_add(x, bias):
-    return gelu(x + bias)
+# Define the computation
+g = DataflowGraph("gelu_add")
+x = g.add_input("x", TensorShape([4, 512]))
+bias = g.add_input("bias", TensorShape([512]))
+gelu = g.add_op(OpType.GELU, [x], "gelu")
+out = g.add(gelu, bias, "add")
+g.add_output(out)
 
-# first call: trace + compile + cache
-# subsequent: cached kernel
-output = fused_gelu_add(x, bias)
+# Compile: 2 ops -> 1 fused kernel
+compiler = ZeroCompiler(verbose=True)
+kernels = compiler.compile(g)
+compiler.save(kernels, "output/")
+
+# JIT compile and run
+from molten.runtime import MoltenRuntime
+runtime = MoltenRuntime()
+compiled = runtime.compile(kernels[0])
+result = compiled(input_tensor)
 ```
 
 ## Programmatic API
