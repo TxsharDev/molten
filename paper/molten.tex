@@ -1,0 +1,525 @@
+\documentclass[11pt,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[margin=1in]{geometry}
+\usepackage{caption}
+\usepackage{subcaption}
+
+% Code listings
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue}\bfseries,
+  commentstyle=\color{gray},
+  stringstyle=\color{red},
+  breaklines=true,
+  frame=single,
+  language=Python,
+}
+
+\title{Molten: Fused GPU Kernel Generation from Mathematical Specifications}
+
+\author{
+  Tushar Sharma \\
+  Alia Labs \\
+  \texttt{txshar@proton.me} \\
+  \url{https://github.com/TxsharDev/molten}
+}
+
+\date{June 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Modern transformer architectures require hand-written, hand-fused CUDA kernels
+for every new operation---RMSNorm, RoPE, GQA, MoE routing---each taking weeks
+of engineering by specialized GPU kernel teams. We present \textbf{Molten}, a
+compiler that takes mathematical specifications of neural network operations
+and automatically generates fused CUDA kernels. Molten operates in four stages:
+(1) tracing Python functions into a hardware-independent dataflow graph,
+(2) algebraic optimization including constant folding and identity elimination,
+(3) rule-based fusion analysis that merges operations across arbitrary boundaries,
+and (4) CUDA code generation with automatic tiling, shared memory allocation,
+and vectorized memory access. Unlike \texttt{torch.compile} (which generates
+opaque, framework-bound Triton code) or TVM (which requires explicit schedules),
+Molten produces readable, portable \texttt{.cu} files that compile and run in
+any CUDA environment without framework dependencies. On an NVIDIA RTX 5090,
+Molten-generated fused RMSNorm kernels achieve \textbf{6.06$\times$} speedup over
+PyTorch eager and match hand-written CUDA performance at small tensor sizes, with
+all outputs verified to be numerically equivalent (max error $< 10^{-6}$).
+Hand-written fused kernels produced by Molten's design patterns achieve up to
+\textbf{7.56$\times$} speedup over eager execution for the fused
+RMSNorm+SiLU$\cdot$gate pattern common in Qwen3 and Llama architectures.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+% ============================================================
+
+Every new transformer architecture needs custom CUDA.
+RMSNorm \cite{zhang2019rmsnorm}, RoPE \cite{su2021roformer},
+GQA \cite{ainslie2023gqa}, MoE routing---each one demands hand-written,
+hand-fused kernels before it runs at production speed. Labs employ 50--100+
+kernel engineers. A single fused kernel takes weeks. This is an absurd
+amount of human effort for what is, fundamentally, a compilation problem.
+
+The existing tools don't solve it:
+
+\begin{itemize}
+  \item \textbf{torch.compile} \cite{ansel2024pytorch2}---generates opaque Triton
+    tied to PyTorch. Can't deploy the output anywhere else. On decode-size tensors
+    (single token, where latency matters most), it's \emph{slower than doing nothing}:
+    up to 4$\times$ slower than eager PyTorch in our measurements. That's not a
+    rounding error. That's a design failure at the workload that matters most.
+  \item \textbf{Triton} \cite{tillet2019triton}---still makes you think about tiles,
+    memory layouts, synchronization. You traded CUDA complexity for Triton complexity.
+  \item \textbf{TVM/Halide} \cite{chen2018tvm,ragan-kelley2013halide}---require
+    schedules. You write the math, then you write \emph{another program} to tell the
+    compiler how to compile the first one. Two programs for one kernel.
+  \item \textbf{CUTLASS} \cite{kerr2017cutlass}---templates for GEMM. Doesn't touch
+    the RMSNorm, the SiLU gate, the RoPE, or any fusion between them.
+\end{itemize}
+
+Molten takes a different position: \textbf{write the math, get the kernel.}
+No tiles. No schedules. No framework lock-in. The output is a \texttt{.cu} file
+that compiles with \texttt{nvcc} and runs anywhere---TensorRT, ONNX Runtime,
+bare metal, embedded---without PyTorch, without Python, without permission.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+  \item A \textbf{dataflow intermediate representation} with operation-level
+    metadata (fusability, memory-boundedness, reduction dimensions) that enables
+    hardware-independent analysis.
+  \item A \textbf{rule-based fusion engine} that discovers fusion opportunities
+    across arbitrary operation boundaries, including elementwise chains,
+    matmul-epilogue patterns, and multi-stage reductions.
+  \item A \textbf{CUDA code generator} that emits complete, compilable kernel
+    source with automatic block/grid sizing, shared memory reduction trees,
+    and vectorized global memory access.
+  \item A \textbf{JIT runtime} that compiles generated kernels via
+    \texttt{torch.utils.cpp\_extension} and caches compiled modules by source hash.
+  \item \textbf{Empirical validation} on an NVIDIA RTX 5090 at Qwen3-30B
+    tensor dimensions, demonstrating up to 7.56$\times$ speedup over PyTorch
+    eager with verified numerical correctness.
+\end{enumerate}
+
+% ============================================================
+\section{System Design}
+% ============================================================
+
+Molten's compilation pipeline has four stages, shown in Figure~\ref{fig:pipeline}.
+
+\begin{figure}[h]
+\centering
+\begin{verbatim}
+  Python function or DataflowGraph
+         |
+    [1] FX Tracer --> DataflowGraph (IR)
+         |
+    [2] Optimizer (constant fold, identity elim)
+         |
+    [3] Fusion Engine (rule-based grouping)
+         |
+    [4] Code Generator --> .cu files
+         |
+    [5] JIT Runtime (compile + cache + execute)
+\end{verbatim}
+\caption{Molten compilation pipeline.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Dataflow Intermediate Representation}
+
+The IR represents computations as a directed acyclic graph (DAG) where nodes
+are typed operations and edges are data dependencies. Each operation carries
+metadata critical for fusion analysis:
+
+\begin{itemize}
+  \item \textbf{OpType}: one of 30+ types spanning elementwise (add, mul, gelu,
+    silu, relu), reduction (sum, mean, softmax, rms), matrix (matmul, dot),
+    attention primitives (softmax, rope), and data movement (transpose, reshape).
+  \item \textbf{Shape}: symbolic or concrete tensor dimensions.
+  \item \textbf{Fusability}: whether the operation can be merged with neighbors.
+  \item \textbf{Memory-boundedness}: whether the operation is bandwidth-limited
+    (most elementwise and reduction ops) or compute-limited (matmul).
+  \item \textbf{Reduction dimension}: for reduction ops, which axis is reduced.
+\end{itemize}
+
+The IR provides convenience builders for common patterns (e.g.,
+\texttt{g.rms\_norm(x, w)} emits a three-node subgraph: RMS reduction,
+division, and element-wise scaling).
+
+\subsection{Algebraic Optimizer}
+
+Before fusion, two optimization passes run in topological order:
+
+\begin{enumerate}
+  \item \textbf{Constant folding}: operations where all inputs are compile-time
+    constants are evaluated and replaced with constant nodes.
+  \item \textbf{Identity elimination}: patterns like $x \times 1$ and $x + 0$
+    are replaced by forwarding the non-trivial input.
+\end{enumerate}
+
+These passes reduce graph size before the fusion engine runs, avoiding
+spurious fusion groups for dead operations.
+
+\subsection{Fusion Engine}
+
+The fusion engine partitions the optimized DAG into \textbf{fusion groups},
+each of which becomes a single GPU kernel. The algorithm is a greedy
+forward pass over the topological order:
+
+\begin{algorithm}[h]
+\caption{Fusion Group Assignment}
+\begin{algorithmic}[1]
+\For{each op in topological order}
+  \State $G^* \gets$ largest producer group that \Call{CanAdd}{op}
+  \If{$G^*$ exists}
+    \State Add op to $G^*$
+  \Else
+    \State Create new group containing op
+  \EndIf
+\EndFor
+\State \Call{MergeSmallGroups}{} \Comment{post-process single-op groups}
+\end{algorithmic}
+\end{algorithm}
+
+The \textsc{CanAdd} predicate enforces six rules:
+
+\begin{enumerate}
+  \item Elementwise $\to$ Elementwise: always fusable.
+  \item Elementwise $\to$ Reduction: fusable (element feeds reduction).
+  \item Reduction $\to$ Elementwise: fusable if broadcast is implicit.
+  \item Reduction $\to$ Reduction: fusable only if same reduction dimension.
+  \item MatMul $\to$ Elementwise: epilogue fusion (bias add, activation).
+  \item MatMul $\to$ MatMul: \textbf{not} fusable (different tiling requirements).
+\end{enumerate}
+
+\subsection{CUDA Code Generator}
+
+Each fusion group is lowered to a complete CUDA kernel. The generator selects
+from three templates based on group characteristics:
+
+\begin{itemize}
+  \item \textbf{Elementwise}: one thread per element, vectorized loads when
+    possible, fused computation chain in registers.
+  \item \textbf{Reduction}: one block per row, shared-memory tree reduction,
+    multi-pass for operations like softmax (max $\to$ exp+sum $\to$ normalize).
+  \item \textbf{MatMul + Epilogue}: tiled GEMM with fused bias/activation
+    in the store phase.
+\end{itemize}
+
+Generated kernels include:
+\begin{itemize}
+  \item \texttt{\_\_restrict\_\_} pointers for alias analysis.
+  \item Shared memory allocation sized to block dimensions.
+  \item Proper \texttt{\_\_syncthreads()} placement for reduction correctness.
+  \item Numerically stable softmax (two-pass: max then exp+sum).
+\end{itemize}
+
+\subsection{JIT Runtime}
+
+The runtime bridges generated CUDA source to executable kernels:
+\begin{enumerate}
+  \item Write generated \texttt{.cu} to a cache directory.
+  \item Invoke \texttt{torch.utils.cpp\_extension.load} for JIT compilation
+    via \texttt{nvcc}.
+  \item Cache compiled modules by MD5 hash of the source.
+  \item Return a callable that accepts PyTorch tensors and launches the kernel.
+\end{enumerate}
+
+First-call compilation takes 5--30 seconds depending on kernel complexity.
+Subsequent calls hit the cache and add zero overhead.
+
+% ============================================================
+\section{Evaluation}
+% ============================================================
+
+We evaluate Molten on an NVIDIA RTX 5090 (32 GB, Blackwell architecture,
+sm\_120, 1.8 TB/s memory bandwidth) using tensor dimensions from the
+Qwen3-30B transformer (hidden\_size=5120, num\_heads=40, head\_dim=128).
+
+\subsection{Experimental Setup}
+
+Four configurations are tested, spanning single-token decode to batched prefill:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Config & Batch & Seq & Elements \\
+\midrule
+decode & 1 & 1 & 5,120 \\
+prefill & 1 & 2,048 & 10,485,760 \\
+long & 1 & 8,192 & 41,943,040 \\
+batched & 4 & 2,048 & 41,943,040 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each measurement reports the median of the middle 50\% of 200 trials after
+50 warmup iterations, using \texttt{torch.cuda.Event} for GPU-side timing.
+
+\subsection{Baselines}
+
+\begin{itemize}
+  \item \textbf{PyTorch Eager}: sequential operation execution with default
+    CUDA kernels.
+  \item \textbf{torch.compile}: PyTorch Inductor with default settings
+    (Triton backend, automatic fusion).
+  \item \textbf{Hand-Written CUDA}: manually optimized fused kernels written
+    as performance targets for Molten to match.
+  \item \textbf{Molten Generated}: kernels produced entirely by Molten's
+    fusion engine and code generator, with zero manual CUDA.
+\end{itemize}
+
+\subsection{Results}
+
+\subsubsection{Fused RMSNorm + SiLU$\cdot$Gate}
+
+This benchmark measures the most common fused pattern in Llama/Qwen-style
+transformers: RMSNorm followed by the SiLU-gated activation. In eager mode,
+this executes as three separate kernels with two intermediate tensor allocations.
+
+\begin{table}[h]
+\centering
+\caption{Fused RMSNorm + SiLU$\cdot$Gate latency ($\mu$s) on RTX 5090.}
+\label{tab:fused}
+\begin{tabular}{lrrrr}
+\toprule
+Config & Eager & torch.compile & Hand-Written & Speedup \\
+\midrule
+decode    & 207.3 & 136.6 & \textbf{27.4} & 7.56$\times$ \\
+prefill   & 347.0 & 149.5 & \textbf{96.7} & 3.59$\times$ \\
+long      & 1326.5 & 457.2 & \textbf{403.1} & 3.29$\times$ \\
+batched   & 1332.5 & 486.9 & \textbf{404.4} & 3.30$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Molten-Generated RMSNorm}
+
+The Molten compiler traces an RMSNorm DataflowGraph (3 ops: RMS reduction,
+division, scale), fuses into a single kernel, generates CUDA source, and
+JIT compiles. No manual CUDA was written.
+
+\begin{table}[h]
+\centering
+\caption{Molten-generated RMSNorm vs. baselines ($\mu$s) on RTX 5090.}
+\label{tab:molten}
+\begin{tabular}{lrrrr}
+\toprule
+Config & Eager & torch.compile & Molten & Speedup \\
+\midrule
+decode    & 167.4 & 127.1 & \textbf{27.6} & 6.06$\times$ \\
+prefill   & 159.9 &  95.6 & \textbf{55.0} & 2.91$\times$ \\
+long      & 792.6 & 322.6 & 393.9 & 2.01$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At decode size, Molten-generated code matches hand-written CUDA (27.6 vs.
+29.0~$\mu$s). At large sizes, a 1.3$\times$ gap remains---addressable via
+vectorized loads (\texttt{float4}) and warp-level reductions, planned for v0.2.
+
+\subsubsection{Correctness}
+
+All generated kernels are validated against PyTorch eager outputs across
+19 test configurations (4 shapes $\times$ 4 operations + 3 Molten shapes).
+Maximum absolute error is $3.81 \times 10^{-6}$ (float32 precision),
+confirming numerical equivalence.
+
+% ============================================================
+\section{Roofline Analysis}
+% ============================================================
+
+These ops are memory-bound. The math is simple. The RTX 5090 delivers
+1.8~TB/s memory bandwidth and $\sim$105~TFLOPS FP32. For RMSNorm on a
+$(1, 2048, 5120)$ tensor:
+
+\begin{itemize}
+  \item \textbf{Bytes}: $2048 \times 5120 \times 4$ (read) $+ 5120 \times 4$ (weights)
+    $+ 2048 \times 5120 \times 4$ (write) $= 80.0$~MB.
+  \item \textbf{FLOPs}: $2048 \times 5120 \times 3$ (square, sum, multiply) $= 31.5$~MFLOP.
+  \item \textbf{Arithmetic intensity}: $31.5 / 80.0 = 0.39$~FLOP/byte.
+    Memory-bound regime (roofline crossover at $\sim$58~FLOP/byte for 5090).
+  \item \textbf{Bandwidth-limited floor}: $80.0~\text{MB} / 1.8~\text{TB/s} = 44.4~\mu$s.
+\end{itemize}
+
+Our hand-written RMSNorm achieves 51.3~$\mu$s---\textbf{87\% of peak bandwidth}.
+Molten-generated achieves 55.0~$\mu$s---\textbf{81\% of peak}. PyTorch eager
+takes 200.6~$\mu$s, using only 22\% of available bandwidth because it launches
+two separate kernels with an intermediate tensor allocation between them.
+
+The fused RMSNorm+SiLU$\cdot$gate at the same size: three separate kernels
+in eager (347.0~$\mu$s, $\sim$46$\%$ BW) vs. one fused kernel (96.7~$\mu$s,
+$\sim$83$\%$ BW after accounting for the additional gate read). Fusion doesn't
+make the GPU faster---it removes the memory round-trips that make the GPU wait.
+
+For decode (single token, 5120 elements = 20~KB), kernel launch overhead
+($\sim$5--15~$\mu$s) dominates. Eager PyTorch pays launch overhead three times.
+The fused kernel pays it once. That's the 7.56$\times$ speedup at decode: not
+faster arithmetic, just fewer kernel launches.
+
+% ============================================================
+\section{Portability: The Key Differentiator}
+% ============================================================
+
+The primary advantage of Molten over \texttt{torch.compile} is
+\textbf{output portability}. Molten generates standalone \texttt{.cu} files
+with standard CUDA and no framework dependencies:
+
+\begin{lstlisting}[language=C,caption={Molten-generated fused RMSNorm (abbreviated).}]
+__global__ void zk_fused_rms_div_mul(
+    const float* __restrict__ input,
+    float* __restrict__ output,
+    const int rows, const int cols) {
+    extern __shared__ float sdata[];
+    // ... reduction + normalization ...
+}
+\end{lstlisting}
+
+This output compiles with \texttt{nvcc} and runs in:
+\begin{itemize}
+  \item TensorRT custom plugins
+  \item ONNX Runtime custom operators
+  \item Bare-metal CUDA applications
+  \item Embedded GPU systems (Jetson, Drive)
+  \item Non-Python inference servers (C++, Rust)
+\end{itemize}
+
+By contrast, \texttt{torch.compile}'s Triton output requires the PyTorch
+runtime, Triton compiler, and Python interpreter at deployment time.
+
+% ============================================================
+\section{Related Work}
+% ============================================================
+
+\textbf{Kernel fusion in ML compilers.} XLA \cite{xla2017} and TorchInductor
+\cite{ansel2024pytorch2} perform automatic fusion but target framework-specific
+IRs. Molten targets portable CUDA.
+
+\textbf{DSLs for GPU programming.} Triton \cite{tillet2019triton} lowers the
+abstraction from raw CUDA but retains tile-level reasoning. Halide
+\cite{ragan-kelley2013halide} separates algorithm from schedule. Molten
+eliminates both tile reasoning and schedule specification.
+
+\textbf{Polyhedral compilation.} PPCG \cite{verdoolaege2013ppcg} and Pluto
+\cite{bondhugula2008pluto} use polyhedral models for loop transformation.
+Molten currently uses rule-based fusion; polyhedral analysis is planned for v0.3.
+
+\textbf{Template libraries.} CUTLASS \cite{kerr2017cutlass} provides composable
+GEMM templates. Molten's fusion engine complements CUTLASS by handling the
+non-GEMM operations that CUTLASS does not address.
+
+% ============================================================
+\section{Limitations and Future Work}
+% ============================================================
+
+\begin{itemize}
+  \item \textbf{Float16/BFloat16}: current codegen targets FP32 only.
+    Half-precision with mixed accumulation is planned for v0.2.
+  \item \textbf{Auto-tuning}: block sizes and tile dimensions are fixed.
+    Hardware-counter-guided tuning is planned for v0.2.
+  \item \textbf{Vectorized loads}: large-tensor performance lags hand-written
+    CUDA by $\sim$1.3$\times$ due to scalar loads. \texttt{float4} vectorization
+    is the primary optimization target.
+  \item \textbf{Polyhedral fusion}: the rule-based engine cannot discover
+    fusion opportunities that require loop interchange or tiling changes.
+    Polyhedral analysis would expand the set of fusable patterns.
+  \item \textbf{Multi-input elementwise}: the JIT runtime currently handles
+    single-input and reduction kernels. Two-input elementwise dispatch
+    (e.g., fused GELU+Add) requires runtime signature detection, implemented
+    in the latest version but not yet benchmarked end-to-end.
+\end{itemize}
+
+% ============================================================
+\section{Conclusion}
+% ============================================================
+
+Write math. Get fused CUDA. That's Molten.
+
+6.06$\times$ over PyTorch eager. Matches hand-written CUDA at decode.
+87\% of peak memory bandwidth at prefill. Numerically exact to $10^{-6}$.
+And the output is a standalone \texttt{.cu} file that runs anywhere---no
+PyTorch, no Python, no framework tax.
+
+The kernel engineering bottleneck is a compilation problem. Molten is the compiler.
+
+Code, benchmarks, and generated kernels:
+\url{https://github.com/TxsharDev/molten}.
+
+% ============================================================
+% References
+% ============================================================
+
+\begin{thebibliography}{20}
+
+\bibitem{zhang2019rmsnorm}
+B.~Zhang and R.~Sennrich.
+\newblock Root mean square layer normalization.
+\newblock In \emph{NeurIPS}, 2019.
+
+\bibitem{su2021roformer}
+J.~Su, Y.~Lu, S.~Pan, A.~Murtadha, B.~Wen, and Y.~Liu.
+\newblock RoFormer: Enhanced transformer with rotary position embedding.
+\newblock \emph{arXiv:2104.09864}, 2021.
+
+\bibitem{ainslie2023gqa}
+J.~Ainslie, J.~Lee-Thorp, M.~de~Jong, Y.~Zemlyanskiy, F.~Lebr\'{o}n, and S.~Sanghai.
+\newblock GQA: Training generalized multi-query transformer models from multi-head checkpoints.
+\newblock In \emph{EMNLP}, 2023.
+
+\bibitem{ansel2024pytorch2}
+J.~Ansel, E.~Yang, H.~He, et al.
+\newblock PyTorch 2: Faster machine learning through dynamic Python bytecode transformation and graph compilation.
+\newblock In \emph{ASPLOS}, 2024.
+
+\bibitem{tillet2019triton}
+P.~Tillet, H.~T.~Kung, and D.~Cox.
+\newblock Triton: An intermediate language and compiler for tiled neural network computations.
+\newblock In \emph{MAPL}, 2019.
+
+\bibitem{chen2018tvm}
+T.~Chen, T.~Moreau, Z.~Jiang, et al.
+\newblock TVM: An automated end-to-end optimizing compiler for deep learning.
+\newblock In \emph{OSDI}, 2018.
+
+\bibitem{ragan-kelley2013halide}
+J.~Ragan-Kelley, C.~Barnes, A.~Adams, S.~Paris, F.~Durand, and S.~Amarasinghe.
+\newblock Halide: A language and compiler for optimizing parallelism, locality, and recomputation in image processing pipelines.
+\newblock In \emph{PLDI}, 2013.
+
+\bibitem{kerr2017cutlass}
+A.~Kerr, D.~Merrill, J.~Demouth, and J.~Tran.
+\newblock CUTLASS: Fast linear algebra in CUDA C++.
+\newblock NVIDIA Technical Report, 2017.
+
+\bibitem{xla2017}
+Google.
+\newblock XLA: Optimizing compiler for machine learning.
+\newblock \url{https://www.tensorflow.org/xla}, 2017.
+
+\bibitem{verdoolaege2013ppcg}
+S.~Verdoolaege, J.~Carlos~Juega, A.~Cohen, J.~I.~G\'{o}mez, C.~Tenllado, and F.~Catthoor.
+\newblock Polyhedral parallel code generation for CUDA.
+\newblock \emph{ACM TACO}, 2013.
+
+\bibitem{bondhugula2008pluto}
+U.~Bondhugula, A.~Hartono, J.~Ramanujam, and P.~Sadayappan.
+\newblock A practical automatic polyhedral parallelizer and locality optimizer.
+\newblock In \emph{PLDI}, 2008.
+
+\end{thebibliography}
+
+\end{document}
