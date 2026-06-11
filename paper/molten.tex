@@ -496,6 +496,10 @@ non-GEMM operations that CUTLASS does not address.
   \item \textbf{Polyhedral fusion}: the rule-based engine cannot discover
     fusion opportunities that require loop interchange or tiling changes.
     Polyhedral analysis would expand the set of fusable patterns.
+  \item 	extbf{Attention fusion}: generating a single kernel for the
+    full Q@K softmax @V attention pattern is the next major fusion target.
+    This requires cross-reduction fusion that the current rule-based engine
+    does not support.
   \item \textbf{Multi-input elementwise}: the JIT runtime currently handles
     single-input and reduction kernels. Two-input elementwise dispatch
     (e.g., fused GELU+Add) requires runtime signature detection, implemented

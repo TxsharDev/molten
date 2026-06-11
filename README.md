@@ -101,6 +101,14 @@ Real model validation on Qwen2.5-7B (57 RMSNorm layers, hidden=3584).
 }
 ```
 
+## Roadmap
+
+**v0.1 (current)** - IR, fusion engine, CUDA codegen, JIT runtime. RMSNorm and elementwise fusion proven. Scalar memory access.
+
+**v0.2** - Vectorized loads (`float4`/`half2`). This closes the gap where torch.compile currently wins at long sequences. fp16 I/O benchmarked end-to-end. `@zero` decorator dispatches generated kernels directly.
+
+**v0.3** - Attention fusion (Q@K softmax @V as one kernel). RoPE integration. Polyhedral loop optimization for complex fusion patterns. Auto-tuning via hardware counter feedback.
+
 ## License
 
 Apache-2.0 | Alia Labs
