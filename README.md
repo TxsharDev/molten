@@ -140,10 +140,10 @@ Molten-generated kernels match hand-written CUDA at small sizes. The gap at larg
 ## Citation
 
 ```bibtex
-@article{sharma2025molten,
+@article{sharma2026molten,
   title={Molten: Fused GPU Kernel Generation from Mathematical Specifications},
   author={Sharma, Tushar},
-  year={2025},
+  year={2026},
   url={https://github.com/TxsharDev/molten}
 }
 ```
