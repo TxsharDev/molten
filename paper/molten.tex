@@ -14,7 +14,17 @@
 \usepackage[margin=1in]{geometry}
 \usepackage{caption}
 \usepackage{subcaption}
+\usepackage{fancyhdr}
 \graphicspath{{figures/}}
+
+% Alia Labs branding
+\definecolor{aliablue}{RGB}{30,60,120}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{aliablue}{\textbf{ALIA LABS}} \textcolor{gray}{| Technical Report}}
+\fancyhead[R]{\small\textcolor{gray}{June 2026}}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
 
 % Code listings
 \lstset{
