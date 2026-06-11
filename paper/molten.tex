@@ -44,7 +44,7 @@
 
 \begin{abstract}
 Modern transformer architectures require hand-written, hand-fused CUDA kernels
-for every new operation---RMSNorm, RoPE, GQA, MoE routing---each taking weeks
+for every new operation (RMSNorm, RoPE, GQA, MoE routing), each taking weeks
 of engineering by specialized GPU kernel teams. We present \textbf{Molten}, a
 compiler that takes mathematical specifications of neural network operations
 and automatically generates fused CUDA kernels. Molten operates in four stages:
@@ -61,7 +61,7 @@ Molten-generated fused RMSNorm kernels achieve \textbf{4.6$\times$} speedup over
 prefill, reaching 81\% of peak memory bandwidth. On an NVIDIA H100 SXM,
 \texttt{torch.compile} achieves 3.76$\times$ over eager on real Qwen2.5-7B
 RMSNorm layers at seq=2048. At long sequences ($\geq$8192), \texttt{torch.compile}
-surpasses Molten's current codegen---the gap is addressable via vectorized loads
+surpasses Molten's current codegen. The gap is addressable via vectorized loads
 and is the primary optimization target. All outputs are verified numerically
 equivalent (max error $< 10^{-6}$, 19/19 test configurations across three GPUs).
 \end{abstract}
@@ -72,7 +72,7 @@ equivalent (max error $< 10^{-6}$, 19/19 test configurations across three GPUs).
 
 Every new transformer architecture needs custom CUDA.
 RMSNorm \cite{zhang2019rmsnorm}, RoPE \cite{su2021roformer},
-GQA \cite{ainslie2023gqa}, MoE routing---each one demands hand-written,
+GQA \cite{ainslie2023gqa}, MoE routing. Each one demands hand-written,
 hand-fused kernels before it runs at production speed. Labs employ 50--100+
 kernel engineers. A single fused kernel takes weeks. This is an absurd
 amount of human effort for what is, fundamentally, a compilation problem.
@@ -80,24 +80,24 @@ amount of human effort for what is, fundamentally, a compilation problem.
 The existing tools don't solve it:
 
 \begin{itemize}
-  \item \textbf{torch.compile} \cite{ansel2024pytorch2}---generates opaque Triton
+  \item \textbf{torch.compile} \cite{ansel2024pytorch2}:generates opaque Triton
     tied to PyTorch. The output cannot be deployed outside PyTorch. At large
     tensor sizes, torch.compile is competitive with hand-written CUDA. But the
-    generated code is not inspectable, not portable, and not modifiable---it is
+    generated code is not inspectable, not portable, and not modifiable. It is
     a black box optimized for the PyTorch runtime.
-  \item \textbf{Triton} \cite{tillet2019triton}---still makes you think about tiles,
+  \item \textbf{Triton} \cite{tillet2019triton}:still makes you think about tiles,
     memory layouts, synchronization. You traded CUDA complexity for Triton complexity.
-  \item \textbf{TVM/Halide} \cite{chen2018tvm,ragan-kelley2013halide}---require
+  \item \textbf{TVM/Halide} \cite{chen2018tvm,ragan-kelley2013halide}:require
     schedules. You write the math, then you write \emph{another program} to tell the
     compiler how to compile the first one. Two programs for one kernel.
-  \item \textbf{CUTLASS} \cite{kerr2017cutlass}---templates for GEMM. Doesn't touch
+  \item \textbf{CUTLASS} \cite{kerr2017cutlass}:templates for GEMM. Doesn't touch
     the RMSNorm, the SiLU gate, the RoPE, or any fusion between them.
 \end{itemize}
 
 Molten takes a different position: \textbf{write the math, get the kernel.}
 No tiles. No schedules. No framework lock-in. The output is a \texttt{.cu} file
-that compiles with \texttt{nvcc} and runs anywhere---TensorRT, ONNX Runtime,
-bare metal, embedded---without PyTorch, without Python, without permission.
+that compiles with \texttt{nvcc} and runs anywhere: TensorRT, ONNX Runtime,
+bare metal, embedded, without PyTorch, without Python, without permission.
 
 \paragraph{Contributions.}
 \begin{enumerate}
@@ -365,7 +365,7 @@ Memory-bound operations are bottlenecked by bandwidth, not compute.}
 At decode, Molten-generated code is \textbf{4.6$\times$ faster than torch.compile}
 and matches hand-written CUDA (27.6 vs. 29.0~$\mu$s). At prefill, Molten is
 1.74$\times$ faster than torch.compile. At long sequences (8192 tokens),
-\textbf{torch.compile surpasses Molten} (322.6 vs. 393.9~$\mu$s)---the gap
+\textbf{torch.compile surpasses Molten} (322.6 vs. 393.9~$\mu$s), the gap
 is due to Molten's scalar loads vs. torch.compile's vectorized access.
 Vectorized loads (\texttt{float4}) are the primary optimization target for v0.2.
 
@@ -405,15 +405,15 @@ $(1, 2048, 5120)$ tensor:
   \item \textbf{Bandwidth-limited floor}: $80.0~\text{MB} / 1.8~\text{TB/s} = 44.4~\mu$s.
 \end{itemize}
 
-Our hand-written RMSNorm achieves 51.3~$\mu$s---\textbf{87\% of peak bandwidth}.
-Molten-generated achieves 55.0~$\mu$s---\textbf{81\% of peak}. PyTorch eager
+Our hand-written RMSNorm achieves 51.3~$\mu$s, \textbf{87\% of peak bandwidth}.
+Molten-generated achieves 55.0~$\mu$s, \textbf{81\% of peak}. PyTorch eager
 takes 200.6~$\mu$s, using only 22\% of available bandwidth because it launches
 two separate kernels with an intermediate tensor allocation between them.
 
 The fused RMSNorm+SiLU$\cdot$gate at the same size: three separate kernels
 in eager (347.0~$\mu$s, $\sim$46$\%$ BW) vs. one fused kernel (96.7~$\mu$s,
 $\sim$83$\%$ BW after accounting for the additional gate read). Fusion doesn't
-make the GPU faster---it removes the memory round-trips that make the GPU wait.
+make the GPU faster. It removes the memory round-trips that make the GPU wait.
 
 For decode (single token, 5120 elements = 20~KB), kernel launch overhead
 ($\sim$5--15~$\mu$s) dominates. Eager PyTorch pays launch overhead three times.
@@ -500,7 +500,7 @@ Write math. Get fused CUDA. That's Molten.
 
 6.06$\times$ over PyTorch eager. Matches hand-written CUDA at decode.
 87\% of peak memory bandwidth at prefill. Numerically exact to $10^{-6}$.
-And the output is a standalone \texttt{.cu} file that runs anywhere---no
+And the output is a standalone \texttt{.cu} file that runs anywhere, no
 PyTorch, no Python, no framework tax.
 
 The kernel engineering bottleneck is a compilation problem. Molten is the compiler.
