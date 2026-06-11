@@ -57,7 +57,7 @@ Modern transformer architectures require hand-written, hand-fused CUDA kernels
 for every new operation (RMSNorm, RoPE, GQA, MoE routing), each taking weeks
 of engineering by specialized GPU kernel teams. We present \textbf{Molten}, a
 compiler that takes mathematical specifications of neural network operations
-and automatically generates fused CUDA kernels. Molten operates in four stages:
+and automatically generates fused CUDA kernels. Molten operates in five stages:
 (1) tracing Python functions into a hardware-independent dataflow graph,
 (2) algebraic optimization including constant folding and identity elimination,
 (3) rule-based fusion analysis that merges operations across arbitrary boundaries,
@@ -90,17 +90,17 @@ amount of human effort for what is, fundamentally, a compilation problem.
 The existing tools don't solve it:
 
 \begin{itemize}
-  \item \textbf{torch.compile} \cite{ansel2024pytorch2}:generates opaque Triton
+  \item \textbf{torch.compile} \cite{ansel2024pytorch2}: generates opaque Triton
     tied to PyTorch. The output cannot be deployed outside PyTorch. At large
     tensor sizes, torch.compile is competitive with hand-written CUDA. But the
     generated code is not inspectable, not portable, and not modifiable. It is
     a black box optimized for the PyTorch runtime.
-  \item \textbf{Triton} \cite{tillet2019triton}:still makes you think about tiles,
+  \item \textbf{Triton} \cite{tillet2019triton}: still makes you think about tiles,
     memory layouts, synchronization. You traded CUDA complexity for Triton complexity.
-  \item \textbf{TVM/Halide} \cite{chen2018tvm,ragan-kelley2013halide}:require
+  \item \textbf{TVM/Halide} \cite{chen2018tvm,ragan-kelley2013halide}: require
     schedules. You write the math, then you write \emph{another program} to tell the
     compiler how to compile the first one. Two programs for one kernel.
-  \item \textbf{CUTLASS} \cite{kerr2017cutlass}:templates for GEMM. Doesn't touch
+  \item \textbf{CUTLASS} \cite{kerr2017cutlass}: templates for GEMM. Doesn't touch
     the RMSNorm, the SiLU gate, the RoPE, or any fusion between them.
 \end{itemize}
 
@@ -131,7 +131,7 @@ bare metal, embedded, without PyTorch, without Python, without permission.
 \section{System Design}
 % ============================================================
 
-Molten's compilation pipeline has four stages, shown in Figure~\ref{fig:pipeline}.
+Molten's compilation pipeline has five stages, shown in Figure~\ref{fig:pipeline}.
 
 \begin{figure}[h]
 \centering
@@ -509,7 +509,7 @@ non-GEMM operations that CUTLASS does not address.
 Write math. Get fused CUDA. That's Molten.
 
 6.06$\times$ over PyTorch eager. Matches hand-written CUDA at decode.
-87\% of peak memory bandwidth at prefill. Numerically exact to $10^{-6}$.
+81\% of peak memory bandwidth at prefill. Numerically exact to $10^{-6}$.
 And the output is a standalone \texttt{.cu} file that runs anywhere, no
 PyTorch, no Python, no framework tax.
 
