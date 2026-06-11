@@ -337,14 +337,16 @@ and matches hand-written CUDA (27.6 vs. 29.0~$\mu$s). At prefill, Molten is
 is due to Molten's scalar loads vs. torch.compile's vectorized access.
 Vectorized loads (\texttt{float4}) are the primary optimization target for v0.2.
 
-\subsubsection{H100 Real-Model Validation}
+\subsubsection{H100 Baseline Characterization}
 
-On an NVIDIA H100 SXM, we benchmark Molten's fusion analysis on real
-Qwen2.5-7B (7.6B parameters) RMSNorm layers. The model has 57 RMSNorm
-layers with hidden\_size=3584. \texttt{torch.compile} achieves up to
-\textbf{3.76$\times$} over eager at seq=2048 on these real model layers,
-confirming that the fusion patterns Molten targets deliver significant
-speedups on production architectures.
+To validate that Molten's target fusion patterns yield real speedups on
+production hardware, we benchmark \texttt{torch.compile} (not Molten-generated)
+on Qwen2.5-7B (7.6B parameters) RMSNorm layers on an NVIDIA H100 SXM.
+The model has 57 RMSNorm layers with hidden\_size=3584.
+\texttt{torch.compile} achieves up to \textbf{3.76$\times$} over eager
+at seq=2048, confirming that the fusion patterns Molten targets
+deliver significant speedups on datacenter hardware. Molten-generated
+kernel benchmarks on H100 are planned for v0.2.
 
 \subsubsection{Correctness}
 
