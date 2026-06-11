@@ -52,3 +52,12 @@ output/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# LaTeX
+paper/*.aux
+paper/*.out
+paper/*.pdf
+paper/*.log
+
+# Generated kernels
+benchmarks/generated/
