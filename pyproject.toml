@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "torch>=2.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "molten"
+name = "alia-molten"
 version = "0.1.0"
 description = "Fused GPU kernel generation from mathematical specifications"
 authors = [{name = "Tushar Sharma", email = "txshar@proton.me"}]
