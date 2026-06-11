@@ -27,6 +27,7 @@ class KernelConfig:
     vectorize: int = 4          # float4 loads
     shared_mem_bytes: int = 0
     registers_per_thread: int = 32
+    dtype: str = "float"        # "float" or "half"
     use_half2: bool = True      # fused half-precision pairs
 
 
@@ -78,8 +79,12 @@ class CodeGenerator:
     5. Vectorized stores to global memory
     """
 
-    def __init__(self, compute_capability: int = 80):
+    def __init__(self, compute_capability: int = 80, fp16: bool = False):
         self.cc = compute_capability
+        self.fp16 = fp16
+        self.dtype = "half" if fp16 else "float"
+        self.ptr_type = "__half" if fp16 else "float"
+        self.compute_type = "float"  # always compute in fp32, store in fp16
 
     def generate(self, graph: DataflowGraph,
                  group: FusionGroup) -> GeneratedKernel:
@@ -115,14 +120,17 @@ class CodeGenerator:
         lines = []
         lines.append(f"// Molten auto-generated: {name}")
         lines.append(f"// Fused ops: {' -> '.join(op.op_type.name for op in ops)}")
+        if self.fp16:
+            lines.append(f"// Precision: fp16 I/O, fp32 compute")
+            lines.append("#include <cuda_fp16.h>")
         lines.append("")
 
-        # Signature
+        # Signature — fp16 I/O with fp32 compute, or pure fp32
+        ptr_t = self.ptr_type
         args = []
         for i, inp_id in enumerate(input_list):
-            inp = graph.ops[inp_id]
-            args.append(f"const float* __restrict__ in{i}")
-        args.append("float* __restrict__ out")
+            args.append(f"const {ptr_t}* __restrict__ in{i}")
+        args.append(f"{ptr_t}* __restrict__ out")
         args.append("const int N")
 
         lines.append(f"__global__ void {name}({', '.join(args)}) {{")
@@ -130,9 +138,12 @@ class CodeGenerator:
         lines.append(f"    if (idx >= N) return;")
         lines.append("")
 
-        # Load inputs
+        # Load inputs (cast to fp32 for compute if fp16 I/O)
         for i in range(num_inputs):
-            lines.append(f"    float v{i} = in{i}[idx];")
+            if self.fp16:
+                lines.append(f"    float v{i} = __half2float(in{i}[idx]);")
+            else:
+                lines.append(f"    float v{i} = in{i}[idx];")
 
         # Fused computation — track op_id -> variable name mapping
         result_var = f"v0"
@@ -161,7 +172,10 @@ class CodeGenerator:
             op_id_to_var[op.id] = result_var
             lines.append(f"    float {result_var} = {expr};")
 
-        lines.append(f"    out[idx] = {result_var};")
+        if self.fp16:
+            lines.append(f"    out[idx] = __float2half({result_var});")
+        else:
+            lines.append(f"    out[idx] = {result_var};")
         lines.append("}")
 
         source = "\n".join(lines)
@@ -374,13 +388,14 @@ class CodeGenerator:
 
 
 def compile_graph(graph: DataflowGraph,
-                  compute_capability: int = 80) -> list[GeneratedKernel]:
+                  compute_capability: int = 80,
+                  fp16: bool = False) -> list[GeneratedKernel]:
     """Full pipeline: fuse + codegen."""
     from molten.fusion import FusionEngine
 
     engine = FusionEngine()
     groups = engine.fuse(graph)
-    codegen = CodeGenerator(compute_capability)
+    codegen = CodeGenerator(compute_capability, fp16=fp16)
 
     kernels = []
     for group in groups:
