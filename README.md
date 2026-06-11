@@ -14,7 +14,7 @@ Molten turns mathematical operation specs into fused, portable CUDA kernels.
 
 No tile loops. No schedules. No framework lock-in. The output is a `.cu` file. It compiles with `nvcc`. It runs without PyTorch.
 
-Built by [Tushar Sharma](https://github.com/TxsharDev) at Alia Labs.
+Built by [Tushar Sharma](https://github.com/TxsharDev) at ALIA Labs.
 
 ## Install
 
@@ -111,4 +111,4 @@ Real model validation on Qwen2.5-7B (57 RMSNorm layers, hidden=3584).
 
 ## License
 
-Apache-2.0 | Alia Labs
+Apache-2.0 | ALIA Labs
