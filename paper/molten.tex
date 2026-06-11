@@ -73,7 +73,7 @@ prefill, reaching 81\% of peak memory bandwidth. On an NVIDIA H100 SXM,
 RMSNorm layers at seq=2048. At long sequences ($\geq$8192), \texttt{torch.compile}
 surpasses Molten's current codegen. The gap is addressable via vectorized loads
 and is the primary optimization target. All outputs are verified numerically
-equivalent (max error $< 10^{-6}$, 19/19 test configurations across three GPUs).
+equivalent (max error $< 5 	imes 10^{-6}$, 19/19 test configurations across three GPUs).
 \end{abstract}
 
 % ============================================================
