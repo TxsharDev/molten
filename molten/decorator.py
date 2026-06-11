@@ -42,6 +42,7 @@ class CompiledFunction:
             verbose=config.verbose,
         )
         self._compiled = False
+        self._compiled_fn = None
         self._kernels: list[GeneratedKernel] = []
         self._graph = None
 
@@ -49,9 +50,13 @@ class CompiledFunction:
         if not self._compiled:
             self._compile_from_args(args, kwargs)
 
-        # v0.1: @zero traces and generates .cu files but executes via PyTorch.
-        # The generated kernels can be compiled and benchmarked separately
-        # via MoltenRuntime. Direct dispatch from @zero is planned for v0.2.
+        # Try to execute via compiled CUDA kernel
+        if self._compiled and self._compiled_fn is not None:
+            try:
+                return self._compiled_fn(*args)
+            except Exception:
+                pass  # fall back to PyTorch
+
         return self.fn(*args, **kwargs)
 
     def _compile_from_args(self, args, kwargs):
@@ -73,6 +78,20 @@ class CompiledFunction:
             self._graph = self.compiler.trace(self.fn, example_inputs)
             self._kernels = self.compiler.compile(self._graph)
             self._compiled = True
+
+            # Try to JIT compile the first kernel for direct execution
+            if self._kernels and torch.cuda.is_available():
+                try:
+                    from molten.runtime import MoltenRuntime
+                    runtime = MoltenRuntime(verbose=self.config.verbose)
+                    compiled = runtime.compile(self._kernels[0])
+                    self._compiled_fn = compiled
+                    if self.config.verbose:
+                        print(f"Molten: JIT compiled kernel for '{self.fn.__name__}'")
+                except Exception as jit_err:
+                    if self.config.verbose:
+                        print(f"Molten: JIT failed, using PyTorch fallback: {jit_err}")
+                    self._compiled_fn = None
 
             if self.config.verbose:
                 print(f"Molten: compiled {len(self._kernels)} kernel(s) "
