@@ -14,6 +14,7 @@
 \usepackage[margin=1in]{geometry}
 \usepackage{caption}
 \usepackage{subcaption}
+\graphicspath{{figures/}}
 
 % Code listings
 \lstset{
@@ -137,8 +138,15 @@ Molten's compilation pipeline has four stages, shown in Figure~\ref{fig:pipeline
          |
     [5] JIT Runtime (compile + cache + execute)
 \end{verbatim}
-\caption{Molten compilation pipeline.}
+\caption{Molten compilation pipeline (text). See Figure~\ref{fig:arch} for visual.}
 \label{fig:pipeline}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{fig_architecture.pdf}
+\caption{Molten pipeline: mathematical specification to portable CUDA kernel.}
+\label{fig:arch}
 \end{figure}
 
 \subsection{Dataflow Intermediate Representation}
@@ -207,6 +215,14 @@ The \textsc{CanAdd} predicate enforces six rules:
   \item MatMul $\to$ Elementwise: epilogue fusion (bias add, activation).
   \item MatMul $\to$ MatMul: \textbf{not} fusable (different tiling requirements).
 \end{enumerate}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\linewidth]{fig_fusion.pdf}
+\caption{Fusion eliminates intermediate memory round-trips. Three separate
+kernels (left) become one fused kernel (right).}
+\label{fig:fusion}
+\end{figure}
 
 \subsection{CUDA Code Generator}
 
@@ -319,7 +335,7 @@ JIT compiles. No manual CUDA was written.
 \centering
 \caption{Molten-generated RMSNorm vs. baselines ($\mu$s) on RTX 5090.}
 \label{tab:molten}
-\begin{tabular}{lrrrr}
+\begin{tabular}{lrrrrr}
 \toprule
 Config & Eager & torch.compile & Molten & vs Eager & vs Compile \\
 \midrule
@@ -329,6 +345,22 @@ long      & 792.6 & 322.6 & 393.9 & 2.01$\times$ & 0.82$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{fig_speedup.pdf}
+\caption{RMSNorm latency comparison on RTX 5090 (log scale). Molten-generated
+kernels beat torch.compile at decode and prefill but lose at long sequences.}
+\label{fig:speedup}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\linewidth]{fig_roofline.pdf}
+\caption{Roofline analysis on RTX 5090 (1.8 TB/s bandwidth, 105 TFLOPS).
+Memory-bound operations are bottlenecked by bandwidth, not compute.}
+\label{fig:roofline}
+\end{figure}
 
 At decode, Molten-generated code is \textbf{4.6$\times$ faster than torch.compile}
 and matches hand-written CUDA (27.6 vs. 29.0~$\mu$s). At prefill, Molten is
